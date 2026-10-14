@@ -82,6 +82,11 @@ impl Account {
                     }
                 }
                 LoginState::Needs2FAVerification => {
+                    if trusted_phone_numbers.is_empty() {
+                        if let Ok(extras) = _self.get_auth_extras().await {
+                            trusted_phone_numbers = extras.trusted_phone_numbers;
+                        }
+                    }
                     let request = TwoFactorRequest {
                         method: TwoFactorMethod::Device,
                         trusted_phone_numbers: trusted_phone_numbers.clone(),
@@ -112,10 +117,7 @@ impl Account {
                         trusted_phone_numbers: trusted_phone_numbers.clone(),
                     };
                     match tfa_closure(request).map_err(|e| {
-                        Error::AuthSrpWithMessage(
-                            0,
-                            format!("Failed to get SMS 2FA code: {}", e),
-                        )
+                        Error::AuthSrpWithMessage(0, format!("Failed to get SMS 2FA code: {}", e))
                     })? {
                         TwoFactorAction::SubmitCode(code) => {
                             response = _self.verify_sms_2fa(code, body).await?
@@ -268,6 +270,10 @@ impl Account {
                 "secondaryAuth" => Ok(LoginState::NeedsSMS2FA),
                 other => Ok(LoginState::NeedsExtraStep(other.to_string())),
             };
+        }
+
+        if status.get("hsc").and_then(|v| v.as_signed_integer()) == Some(409) {
+            return Ok(LoginState::Needs2FAVerification);
         }
 
         Ok(LoginState::LoggedIn)

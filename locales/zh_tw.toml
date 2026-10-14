@@ -49,6 +49,7 @@ settings_select_teams = "選擇團隊···"
 settings_loading_teams = "正在載入團隊···"
 settings_language = "語言："
 settings_system_language = "使用系統語言"
+settings_reset_adi = "Reset Anisette Data"
 
 utilities_loading = "載入中···"
 utilities_refresh_installed_apps = "重新整理已安裝的應用程式"
