@@ -2,7 +2,8 @@
 
 use std::{collections::HashMap, fs, io::Cursor, path::PathBuf};
 
-use crate::adi_proxy::{CLIENT_INFO_HEADER, LOOKUP_CLIENT_INFO};
+use crate::ANISETTE_STATE_FILE;
+use crate::adi_proxy::LOOKUP_CLIENT_INFO;
 use async_trait::async_trait;
 use base64::Engine;
 use base64::engine::general_purpose;
@@ -188,13 +189,12 @@ impl AnisetteClient {
     pub async fn new(url: String) -> Result<AnisetteClient, AnisetteError> {
         let path = format!("{}/v3/client_info", url);
         let http_client = make_reqwest()?;
-        let mut client_info = http_client
+        let client_info = http_client
             .get(path)
             .send()
             .await?
             .json::<AnisetteClientInfo>()
             .await?;
-        client_info.client_info = CLIENT_INFO_HEADER.to_string();
         Ok(AnisetteClient { client_info, url })
     }
 
@@ -496,7 +496,7 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
 
         fs::create_dir_all(&self.configuration_path)?;
 
-        let config_path = self.configuration_path.join("state.plist");
+        let config_path = self.configuration_path.join(ANISETTE_STATE_FILE);
         if self.state.is_none() {
             self.state = Some(if let Ok(text) = plist::from_file(&config_path) {
                 text
@@ -529,10 +529,104 @@ impl AnisetteHeadersProvider for RemoteAnisetteProviderV3 {
 
 #[cfg(test)]
 mod tests {
+    use super::{AnisetteClient, AnisetteState};
     use crate::anisette_headers_provider::AnisetteHeadersProvider;
     use crate::remote_anisette_v3::RemoteAnisetteProviderV3;
     use crate::{AnisetteError, DEFAULT_ANISETTE_URL_V3};
     use log::info;
+
+    #[tokio::test]
+    async fn regression_server_identity_used_for_provisioning_and_auth_headers() {
+        use std::io::{Read, Write};
+        use std::net::TcpListener;
+        use std::time::Duration;
+
+        const MAC_CLIENT_INFO: &str =
+            "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+        const USER_AGENT: &str = "akd/1.0 CFNetwork/808.3 Darwin/16.6.0";
+
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("http://{}", listener.local_addr().unwrap());
+        let server = std::thread::spawn(move || {
+            let responses = [
+                (
+                    "GET /v3/client_info ",
+                    serde_json::json!({
+                        "client_info": MAC_CLIENT_INFO,
+                        "user_agent": USER_AGENT,
+                    }),
+                ),
+                (
+                    "POST /v3/get_headers ",
+                    serde_json::json!({
+                        "result": "Headers",
+                        "X-Apple-I-MD-M": "test-machine",
+                        "X-Apple-I-MD": "test-otp",
+                        "X-Apple-I-MD-RINFO": "17106176",
+                    }),
+                ),
+            ];
+            for (expected_request, response) in responses {
+                let (mut stream, _) = listener.accept().unwrap();
+                stream
+                    .set_read_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0; 1024];
+                loop {
+                    let count = stream.read(&mut buffer).unwrap();
+                    assert_ne!(count, 0, "request closed before its body was received");
+                    request.extend_from_slice(&buffer[..count]);
+                    if let Some(end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]);
+                        let content_length = headers
+                            .lines()
+                            .find_map(|line| {
+                                let (name, value) = line.split_once(':')?;
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().unwrap())
+                            })
+                            .unwrap_or(0);
+                        if request.len() >= end + 4 + content_length {
+                            break;
+                        }
+                    }
+                }
+                assert!(String::from_utf8_lossy(&request).starts_with(expected_request));
+                let body = response.to_string();
+                write!(stream,
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                ).unwrap();
+            }
+        });
+
+        let client = AnisetteClient::new(url).await.unwrap();
+        let state = AnisetteState {
+            keychain_identifier: [1; 16],
+            adi_pb: Some(vec![2; 16]),
+        };
+        let request = client
+            .build_apple_request(
+                &state,
+                reqwest::Client::new().post("http://localhost/provision"),
+                &client.client_info.client_info,
+            )
+            .build()
+            .unwrap();
+        assert_eq!(request.headers()["X-Mme-Client-Info"], MAC_CLIENT_INFO);
+        assert_eq!(request.headers()["User-Agent"], USER_AGENT);
+
+        let headers = client
+            .get_headers(&state)
+            .await
+            .unwrap()
+            .get_headers("0".into());
+        assert_eq!(headers["X-Mme-Client-Info"], MAC_CLIENT_INFO);
+        assert_eq!(headers["X-Apple-I-MD-M"], "test-machine");
+        assert_eq!(headers["X-Apple-I-MD"], "test-otp");
+        server.join().unwrap();
+    }
 
     #[tokio::test]
     async fn fetch_anisette_remote_v3() -> Result<(), AnisetteError> {

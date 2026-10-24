@@ -10,5 +10,6 @@
 *.exe
 *.DS_Store
 state.plist
+mac_anisette_state.plist
 .zsign_cache
 cargo-sources.json

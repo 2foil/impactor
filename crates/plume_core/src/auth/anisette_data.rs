@@ -110,3 +110,60 @@ impl AnisetteData {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const MAC_CLIENT_INFO: &str = "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.akd/1.0>";
+
+    fn mac_anisette() -> AnisetteData {
+        AnisetteData {
+            base_headers: HashMap::from([
+                ("X-Mme-Client-Info".to_string(), MAC_CLIENT_INFO.to_string()),
+                ("X-Apple-I-MD".to_string(), "synthetic-otp".to_string()),
+                (
+                    "X-Apple-I-MD-M".to_string(),
+                    "synthetic-machine-id".to_string(),
+                ),
+            ]),
+            generated_at: SystemTime::now(),
+            config: AnisetteConfiguration::default(),
+        }
+    }
+
+    #[test]
+    fn mac_identity_is_retained_for_two_factor_and_developer_headers() {
+        let data = mac_anisette();
+
+        let headers = data.generate_headers(false, true, true);
+
+        assert_eq!(
+            headers["X-Mme-Client-Info"],
+            "<MacBookPro13,3> <Mac OS X;10.12.6;16G29> <com.apple.AuthKit/1 (com.apple.akd/1.0)>"
+        );
+        assert_eq!(headers["X-Apple-App-Info"], "com.apple.gs.xcode.auth");
+        assert_eq!(headers["X-Xcode-Version"], "11.2 (11B41)");
+        assert_eq!(headers["X-Apple-I-MD"], "synthetic-otp");
+        assert_eq!(data.base_headers["X-Mme-Client-Info"], MAC_CLIENT_INFO);
+    }
+
+    #[test]
+    fn srp_cpd_retains_anisette_without_adding_client_or_app_info() {
+        let data = mac_anisette();
+
+        let cpd = data.to_plist(true, false, false);
+
+        assert!(!cpd.contains_key("X-Mme-Client-Info"));
+        assert!(!cpd.contains_key("X-Apple-App-Info"));
+        assert!(!cpd.contains_key("X-Xcode-Version"));
+        assert_eq!(cpd["X-Apple-I-MD"].as_string(), Some("synthetic-otp"));
+        assert_eq!(
+            cpd["X-Apple-I-MD-M"].as_string(),
+            Some("synthetic-machine-id")
+        );
+        assert_eq!(cpd["bootstrap"].as_string(), Some("true"));
+        assert_eq!(cpd["svct"].as_string(), Some("iCloud"));
+        assert_eq!(data.base_headers["X-Mme-Client-Info"], MAC_CLIENT_INFO);
+    }
+}

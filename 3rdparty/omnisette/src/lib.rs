@@ -57,7 +57,12 @@ pub enum AnisetteError {
 
 pub const DEFAULT_ANISETTE_URL: &str = "https://ani.f1sh.me/";
 
+// Keep the remote provider and its client identity consistent. Apple rejects the
+// previous Windows anisette identity during two-factor authentication (-80046).
 pub const DEFAULT_ANISETTE_URL_V3: &str = "https://mac-ani.jkcoxson.com";
+
+// Do not reuse provisioning data created with the previous provider/identity.
+pub const ANISETTE_STATE_FILE: &str = "mac_anisette_state.plist";
 
 #[derive(Clone, Debug)]
 pub struct AnisetteConfiguration {
